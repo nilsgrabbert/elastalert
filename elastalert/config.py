@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
+from __future__ import print_function
 import copy
 import datetime
 import hashlib
 import logging
 import os
+
+import consul
 
 import alerts
 import enhancements
@@ -84,6 +87,12 @@ def get_module(module_name):
     return module
 
 
+def get_consul_value(key_path):
+    c = consul.Consul(host='192.168.59.103')
+    index, value = c.kv.get(key_path)
+    return value['Value']
+
+
 def load_configuration(filename, conf, args=None):
     """ Load a yaml rule file and fill in the relevant fields with objects.
 
@@ -91,8 +100,12 @@ def load_configuration(filename, conf, args=None):
     :param conf: The global configuration dictionary, used for populating defaults.
     :return: The rule configuration, a dictionary.
     """
+
     try:
-        rule = yaml_loader(filename)
+        if args.consul_rules:
+            rule = yaml.load(get_consul_value(filename))
+        else:
+            rule = yaml_loader(filename)
     except yaml.scanner.ScannerError as e:
         raise EAException('Could not parse file %s: %s' % (filename, e))
 
@@ -284,24 +297,31 @@ def load_modules(rule, args=None):
     rule['alert'] = load_alerts(rule, alert_field=rule['alert'])
 
 
-def get_file_paths(conf, use_rule=None):
-    # Passing a filename directly can bypass rules_folder and .yaml checks
-    if use_rule and os.path.isfile(use_rule):
-        return [use_rule]
-    rule_folder = conf['rules_folder']
+def get_file_paths(conf, use_rule=None, use_consul_rules=False):
     rule_files = []
-    if conf['scan_subdirectories']:
-        for root, folders, files in os.walk(rule_folder):
-            for filename in files:
-                if use_rule and use_rule != filename:
-                    continue
-                if filename.endswith('.yaml'):
-                    rule_files.append(os.path.join(root, filename))
+    if use_consul_rules:
+        c = consul.Consul(host='192.168.59.103')
+        index, rule_configs = c.kv.get('elastalert/rules', recurse=True)
+        for rule_config in rule_configs:
+            rule_files.append(rule_config['Key'])
     else:
-        for filename in os.listdir(rule_folder):
-            fullpath = os.path.join(rule_folder, filename)
-            if os.path.isfile(fullpath) and filename.endswith('.yaml'):
-                rule_files.append(fullpath)
+        # Passing a filename directly can bypass rules_folder and .yaml checks
+        if use_rule and os.path.isfile(use_rule):
+            return [use_rule]
+        rule_folder = conf['rules_folder']
+
+        if conf['scan_subdirectories']:
+            for root, folders, files in os.walk(rule_folder):
+                for filename in files:
+                    if use_rule and use_rule != filename:
+                        continue
+                    if filename.endswith('.yaml'):
+                        rule_files.append(os.path.join(root, filename))
+        else:
+            for filename in os.listdir(rule_folder):
+                fullpath = os.path.join(rule_folder, filename)
+                if os.path.isfile(fullpath) and filename.endswith('.yaml'):
+                    rule_files.append(fullpath)
     return rule_files
 
 
@@ -354,6 +374,7 @@ def load_rules(args):
     filename = args.config
     conf = yaml_loader(filename)
     use_rule = args.rule
+    use_consul_rules = args.consul_rules
 
     # Make sure we have all required globals
     if required_globals - frozenset(conf.keys()):
@@ -384,7 +405,7 @@ def load_rules(args):
 
     # Load each rule configuration file
     rules = []
-    rule_files = get_file_paths(conf, use_rule)
+    rule_files = get_file_paths(conf, use_rule, use_consul_rules)
     for rule_file in rule_files:
         try:
             rule = load_configuration(rule_file, conf, args)
@@ -400,10 +421,13 @@ def load_rules(args):
     return conf
 
 
-def get_rule_hashes(conf, use_rule=None):
-    rule_files = get_file_paths(conf, use_rule)
+def get_rule_hashes(conf, use_rule=None, use_consul_rules=False):
+    rule_files = get_file_paths(conf, use_rule, use_consul_rules)
     rule_mod_times = {}
     for rule_file in rule_files:
-        with open(rule_file) as fh:
-            rule_mod_times[rule_file] = hashlib.sha1(fh.read()).digest()
+        if use_consul_rules:
+            rule_mod_times[rule_file] = hashlib.sha1(get_consul_value(rule_file)).digest()
+        else:
+            with open(rule_file) as fh:
+                rule_mod_times[rule_file] = hashlib.sha1(fh.read()).digest()
     return rule_mod_times

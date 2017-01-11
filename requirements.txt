@@ -13,7 +13,7 @@ jira==0.32
 jsonschema==2.2.0
 mock==1.0.0
 oauthlib==0.7.2
-python-dateutil==2.4.0
+python-dateutil==2.4.1
 requests==2.5.1
 requests-oauthlib==0.4.2
 simplejson==3.3.0
@@ -25,3 +25,4 @@ unittest2==0.8.0
 urllib3==1.8.2
 wsgiref==0.1.2
 stomp.py==4.1.11
+python-consul==0.7.0

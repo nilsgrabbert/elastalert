@@ -21,6 +21,7 @@ from alerts import DebugAlerter
 from config import get_rule_hashes
 from config import load_configuration
 from config import load_rules
+from config import get_consul_value
 from croniter import croniter
 from elasticsearch.exceptions import ElasticsearchException
 from enhancements import DropMatchException
@@ -69,6 +70,7 @@ class ElastAlerter():
         parser.add_argument('--pin_rules', action='store_true', dest='pin_rules', help='Stop ElastAlert from monitoring config file changes')
         parser.add_argument('--es_debug', action='store_true', dest='es_debug', help='Enable verbose logging from Elasticsearch queries')
         parser.add_argument('--es_debug_trace', action='store', dest='es_debug_trace', help='Enable logging from Elasticsearch queries as curl command. Queries will be logged to file')
+        parser.add_argument('--consul_rules', action='store_true', dest='consul_rules', help='read rules from consul kv')
         self.args = parser.parse_args(args)
 
     def __init__(self, args):
@@ -109,7 +111,7 @@ class ElastAlerter():
         self.current_es_addr = None
         self.buffer_time = self.conf['buffer_time']
         self.silence_cache = {}
-        self.rule_hashes = get_rule_hashes(self.conf, self.args.rule)
+        self.rule_hashes = get_rule_hashes(self.conf, self.args.rule, self.args.consul_rules)
         self.starttime = self.args.start
         self.disabled_rules = []
         self.replace_dots_in_field_names = self.conf.get('replace_dots_in_field_names', False)
@@ -631,7 +633,10 @@ class ElastAlerter():
     def load_rule_changes(self):
         ''' Using the modification times of rule config files, syncs the running rules
         to match the files in rules_folder by removing, adding or reloading rules. '''
-        new_rule_hashes = get_rule_hashes(self.conf, self.args.rule)
+
+        use_consul_rules = self.args.consul_rules
+
+        new_rule_hashes = get_rule_hashes(self.conf, self.args.rule, use_consul_rules)
 
         # Check each current rule for changes
         for rule_file, hash_value in self.rule_hashes.iteritems():
@@ -643,17 +648,24 @@ class ElastAlerter():
             if hash_value != new_rule_hashes[rule_file]:
                 # Rule file was changed, reload rule
                 try:
-                    new_rule = load_configuration(rule_file, self.conf)
+                    new_rule = load_configuration(rule_file, self.conf, self.args)
                 except EAException as e:
                     message = 'Could not load rule %s: %s' % (rule_file, e)
                     self.handle_error(message)
                     # Want to send email to address specified in the rule. Try and load the YAML to find it.
-                    with open(rule_file) as f:
+                    if use_consul_rules:
                         try:
-                            rule_yaml = yaml.load(f)
+                            rule_yaml = yaml.load(get_consul_value(rule_file))
                         except yaml.scanner.ScannerError:
                             self.send_notification_email(exception=e)
                             continue
+                    else:
+                        with open(rule_file) as f:
+                            try:
+                                rule_yaml = yaml.load(f)
+                            except yaml.scanner.ScannerError:
+                                self.send_notification_email(exception=e)
+                                continue
 
                     self.send_notification_email(exception=e, rule=rule_yaml)
                     continue
@@ -677,7 +689,7 @@ class ElastAlerter():
         if not self.args.rule:
             for rule_file in set(new_rule_hashes.keys()) - set(self.rule_hashes.keys()):
                 try:
-                    new_rule = load_configuration(rule_file, self.conf)
+                    new_rule = load_configuration(rule_file, self.conf, self.args)
                     if new_rule['name'] in [rule['name'] for rule in self.rules]:
                         raise EAException("A rule with the name %s already exists" % (new_rule['name']))
                 except EAException as e:

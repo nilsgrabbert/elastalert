@@ -38,6 +38,7 @@ setup(
         'configparser',
         'aws-requests-auth',
         'texttable',
-        'twilio'
+        'twilio',
+        'python-consul==0.7.0'
     ]
 )
