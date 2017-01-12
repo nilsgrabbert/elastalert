@@ -70,7 +70,7 @@ class ElastAlerter():
         parser.add_argument('--pin_rules', action='store_true', dest='pin_rules', help='Stop ElastAlert from monitoring config file changes')
         parser.add_argument('--es_debug', action='store_true', dest='es_debug', help='Enable verbose logging from Elasticsearch queries')
         parser.add_argument('--es_debug_trace', action='store', dest='es_debug_trace', help='Enable logging from Elasticsearch queries as curl command. Queries will be logged to file')
-        parser.add_argument('--consul_rules', action='store_true', dest='consul_rules', help='read rules from consul kv')
+        #parser.add_argument('--consul_rules', action='store_true', dest='consul_rules', help='read rules from consul kv')
         self.args = parser.parse_args(args)
 
     def __init__(self, args):
@@ -111,7 +111,7 @@ class ElastAlerter():
         self.current_es_addr = None
         self.buffer_time = self.conf['buffer_time']
         self.silence_cache = {}
-        self.rule_hashes = get_rule_hashes(self.conf, self.args.rule, self.args.consul_rules)
+        self.rule_hashes = get_rule_hashes(self.conf, self.args.rule)
         self.starttime = self.args.start
         self.disabled_rules = []
         self.replace_dots_in_field_names = self.conf.get('replace_dots_in_field_names', False)
@@ -634,9 +634,9 @@ class ElastAlerter():
         ''' Using the modification times of rule config files, syncs the running rules
         to match the files in rules_folder by removing, adding or reloading rules. '''
 
-        use_consul_rules = self.args.consul_rules
+        use_consul = self.conf['use_consul']
 
-        new_rule_hashes = get_rule_hashes(self.conf, self.args.rule, use_consul_rules)
+        new_rule_hashes = get_rule_hashes(self.conf, self.args.rule)
 
         # Check each current rule for changes
         for rule_file, hash_value in self.rule_hashes.iteritems():
@@ -653,9 +653,9 @@ class ElastAlerter():
                     message = 'Could not load rule %s: %s' % (rule_file, e)
                     self.handle_error(message)
                     # Want to send email to address specified in the rule. Try and load the YAML to find it.
-                    if use_consul_rules:
+                    if use_consul:
                         try:
-                            rule_yaml = yaml.load(get_consul_value(rule_file))
+                            rule_yaml = yaml.load(get_consul_value(rule_file, self.conf))
                         except yaml.scanner.ScannerError:
                             self.send_notification_email(exception=e)
                             continue

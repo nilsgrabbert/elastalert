@@ -87,8 +87,8 @@ def get_module(module_name):
     return module
 
 
-def get_consul_value(key_path):
-    c = consul.Consul(host='192.168.59.103')
+def get_consul_value(key_path, conf):
+    c = consul.Consul(host=conf['consul_host'], port=conf['consul_port'])
     index, value = c.kv.get(key_path)
     return value['Value']
 
@@ -102,8 +102,8 @@ def load_configuration(filename, conf, args=None):
     """
 
     try:
-        if args.consul_rules:
-            rule = yaml.load(get_consul_value(filename))
+        if conf['use_consul']:
+            rule = yaml.load(get_consul_value(filename, conf))
         else:
             rule = yaml_loader(filename)
     except yaml.scanner.ScannerError as e:
@@ -297,20 +297,26 @@ def load_modules(rule, args=None):
     rule['alert'] = load_alerts(rule, alert_field=rule['alert'])
 
 
-def get_file_paths(conf, use_rule=None, use_consul_rules=False):
+def get_file_paths(conf, use_rule=None):
     rule_files = []
-    if use_consul_rules:
-        c = consul.Consul(host='192.168.59.103')
-        index, rule_configs = c.kv.get('elastalert/rules', recurse=True)
+    use_consul = conf['use_consul']
+    rule_folder = conf['rules_folder']
+    recurse = conf['scan_subdirectories']
+
+    if use_consul:
+        c = consul.Consul(host=conf['consul_host'], port=conf['consul_port'])
+        if use_rule:
+            index, rule_configs = c.kv.get(use_rule, recurse=recurse)
+        else:
+            index, rule_configs = c.kv.get(rule_folder, recurse=recurse)
+
         for rule_config in rule_configs:
             rule_files.append(rule_config['Key'])
     else:
         # Passing a filename directly can bypass rules_folder and .yaml checks
         if use_rule and os.path.isfile(use_rule):
             return [use_rule]
-        rule_folder = conf['rules_folder']
-
-        if conf['scan_subdirectories']:
+        if recurse:
             for root, folders, files in os.walk(rule_folder):
                 for filename in files:
                     if use_rule and use_rule != filename:
@@ -322,6 +328,7 @@ def get_file_paths(conf, use_rule=None, use_consul_rules=False):
                 fullpath = os.path.join(rule_folder, filename)
                 if os.path.isfile(fullpath) and filename.endswith('.yaml'):
                     rule_files.append(fullpath)
+
     return rule_files
 
 
@@ -374,7 +381,6 @@ def load_rules(args):
     filename = args.config
     conf = yaml_loader(filename)
     use_rule = args.rule
-    use_consul_rules = args.consul_rules
 
     # Make sure we have all required globals
     if required_globals - frozenset(conf.keys()):
@@ -384,6 +390,9 @@ def load_rules(args):
     conf.setdefault('scroll_keepalive', '30s')
     conf.setdefault('disable_rules_on_error', True)
     conf.setdefault('scan_subdirectories', True)
+    conf.setdefault('use_consul', False)
+    conf.setdefault('consul_host', 'localhost')
+    conf.setdefault('consul_port', 8500)
 
     # Convert run_every, buffer_time into a timedelta object
     try:
@@ -405,7 +414,7 @@ def load_rules(args):
 
     # Load each rule configuration file
     rules = []
-    rule_files = get_file_paths(conf, use_rule, use_consul_rules)
+    rule_files = get_file_paths(conf, use_rule)
     for rule_file in rule_files:
         try:
             rule = load_configuration(rule_file, conf, args)
@@ -421,12 +430,13 @@ def load_rules(args):
     return conf
 
 
-def get_rule_hashes(conf, use_rule=None, use_consul_rules=False):
-    rule_files = get_file_paths(conf, use_rule, use_consul_rules)
+def get_rule_hashes(conf, use_rule=None):
+    use_consul = conf['use_consul']
+    rule_files = get_file_paths(conf, use_rule)
     rule_mod_times = {}
     for rule_file in rule_files:
-        if use_consul_rules:
-            rule_mod_times[rule_file] = hashlib.sha1(get_consul_value(rule_file)).digest()
+        if use_consul:
+            rule_mod_times[rule_file] = hashlib.sha1(get_consul_value(rule_file, conf)).digest()
         else:
             with open(rule_file) as fh:
                 rule_mod_times[rule_file] = hashlib.sha1(fh.read()).digest()
