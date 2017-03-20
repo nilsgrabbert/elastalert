@@ -104,6 +104,7 @@ def load_configuration(filename, conf, args=None):
     :param conf: The global configuration dictionary, used for populating defaults.
     :return: The rule configuration, a dictionary.
     """
+
     try:
         if conf['use_consul']:
             rule = yaml.load(get_consul_value(filename, conf))
@@ -112,7 +113,6 @@ def load_configuration(filename, conf, args=None):
     except yaml.scanner.ScannerError as e:
         raise EAException('Could not parse file %s: %s' % (filename, e))
 
-    rule['rule_file'] = filename
     load_options(rule, conf, filename, args)
     load_modules(rule, args)
     return rule
@@ -330,9 +330,13 @@ def isyaml(filename):
 
 
 def get_file_paths(conf, use_rule=None):
-    rule_files = []
-    use_consul = conf['use_consul']
+    # Passing a filename directly can bypass rules_folder and .yaml checks
+    if use_rule and os.path.isfile(use_rule):
+        return [use_rule]
     rule_folder = conf['rules_folder']
+    rule_files = []
+
+    use_consul = conf['use_consul']
     recurse = conf['scan_subdirectories']
 
     if use_consul:
