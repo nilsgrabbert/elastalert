@@ -22,12 +22,12 @@ Rule Configuration Cheat Sheet
 +--------------------------------------------------------------+           |
 | ``index`` (string)                                           |           |
 +--------------------------------------------------------------+           |
-| ``name`` (string)                                            |           |
-+--------------------------------------------------------------+           |
 | ``type`` (string)                                            |           |
 +--------------------------------------------------------------+           |
 | ``alert`` (string or list)                                   |           |
 +--------------------------------------------------------------+-----------+
+| ``name`` (string, defaults to the filename)                  |           |
++--------------------------------------------------------------+           |
 | ``use_strftime_index`` (boolean, default False)              |  Optional |
 +--------------------------------------------------------------+           |
 | ``use_ssl`` (boolean, default False)                         |           |
@@ -83,6 +83,8 @@ Rule Configuration Cheat Sheet
 | ``owner`` (string, default empty string)                     |           |
 +--------------------------------------------------------------+           |
 | ``priority`` (int, default 2)                                |           |
++--------------------------------------------------------------+           |
+| ``import`` (string)                                          |           |
 |                                                              |           |
 | IGNORED IF ``use_count_query`` or ``use_terms_query`` is true|           |
 +--------------------------------------------------------------+           +
@@ -93,6 +95,10 @@ Rule Configuration Cheat Sheet
 | ``timestamp_format`` (string, default "%Y-%m-%dT%H:%M:%SZ")  |           |
 +--------------------------------------------------------------+           |
 | ``_source_enabled`` (boolean, default True)                  |           |
++--------------------------------------------------------------+           |
+| ``alert_text_args`` (array of strs)                          |           |
++--------------------------------------------------------------+           |
+| ``alert_text_kw`` (object)                                   |           |
 +--------------------------------------------------------------+-----------+
 
 |
@@ -206,6 +212,13 @@ or loaded from a module. For loading from a module, the alert should be specifie
 Optional Settings
 ~~~~~~~~~~~~~~~~~
 
+import
+^^^^^^
+
+``import``: If specified includes all the settings from this yaml file. This allows common config options to be shared. Note that imported files that aren't
+complete rules should not have a ``.yml`` or ``.yaml`` suffix so that ElastAlert doesn't treat them as rules. Filters in imported files are merged (ANDed)
+with any filters in the rule. (Optional, string, no default)
+
 use_ssl
 ^^^^^^^
 
@@ -302,6 +315,18 @@ Then, for the same sample data shown above listing alice and bob's events, Elast
     |       bob        |     something      |
     |      alice       |   something else   |
     +------------------+--------------------+
+
+
+.. note::
+   By default, aggregation time is relative to the current system time, not the time of the match. This means that running elastalert over
+   past events will result in different alerts than if elastalert had been running while those events occured. This behavior can be changed
+   by setting ``aggregate_by_match_time``.
+
+aggregate_by_match_time
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Setting this to true will cause aggregations to be created relative to the timestamp of the first event, rather than the current time. This
+is useful for querying over historic data or if using a very large buffer_time and you want multiple aggregations to occur from a single query.
 
 realert
 ^^^^^^^
@@ -870,10 +895,14 @@ This rule requires one additional option:
 
 ``fields``: A list of fields to monitor for new terms. ``query_key`` will be used if ``fields`` is not set. Each entry in the
 list of fields can itself be a list.  If a field entry is provided as a list, it will be interpreted as a set of fields
-that compose a composite key used for the ElasticSearch query.  ``Note: the composite fields may only refer to primitive
-types, otherwise the initial ElasticSearch query will not properly return the aggregation results, thus causing alerts
-to fire every time the ElastAlert service initially launches with the rule. A warning will be logged to the console if
-this scenario is encountered. However, future alerts will actually work as expected after the initial flurry.``
+that compose a composite key used for the ElasticSearch query.
+
+.. note::
+
+   The composite fields may only refer to primitive types, otherwise the initial ElasticSearch query will not properly return
+   the aggregation results, thus causing alerts to fire every time the ElastAlert service initially launches with the rule.
+   A warning will be logged to the console if this scenario is encountered. However, future alerts will actually work as
+   expected after the initial flurry.
 
 Optional:
 
@@ -916,6 +945,51 @@ Optional:
 
 ``query_key``: Group cardinality counts by this field. For each unique value of the ``query_key`` field, cardinality will be counted separately.
 
+Metric Aggregation
+~~~~~~~~
+
+``metric_aggregation``: This rule matches when the value of a metric within the calculation window is higher or lower than a threshold. By 
+default this is ``buffer_time``.
+
+This rule requires:
+
+``metric_agg_key``: This is the name of the field over which the metric value will be calculated. The underlying type of this field must be 
+supported by the specified aggregation type. 
+
+``metric_agg_type``: The type of metric aggregation to perform on the ``metric_agg_key`` field. This must be one of 'min', 'max', 'avg', 
+'sum', 'cardinality', 'value_count'.
+
+``doc_type``: Specify the ``_type`` of document to search for.
+
+This rule also requires at least one of the two following options:
+
+``max_threshold``: If the calculated metric value is greater than this number, an alert will be triggered. This threshold is exclusive.
+
+``min_threshold``: If the calculated metric value is less than this number, an alert will be triggered. This threshold is exclusive.
+
+Optional:
+
+``query_key``: Group metric calculations by this field. For each unique value of the ``query_key`` field, the metric will be calculated and 
+evaluated separately against the threshold(s).
+
+``use_run_every_query_size``: By default the metric value is calculated over a ``buffer_time`` sized window. If this parameter is true 
+the rule will use ``run_every`` as the calculation window.  
+
+``allow_buffer_time_overlap``: This setting will only have an effect if ``use_run_every_query_size`` is false and ``buffer_time`` is greater 
+than ``run_every``. If true will allow the start of the metric calculation window to overlap the end time of a previous run. By default the 
+start and end times will not overlap, so if the time elapsed since the last run is less than the metric calculation window size, rule execution 
+will be skipped (to avoid calculations on partial data). 
+
+``bucket_interval``: If present this will divide the metric calculation window into ``bucket_interval`` sized segments. The metric value will 
+be calculated and evaluated against the threshold(s) for each segment. If ``bucket_interval`` is specified then ``buffer_time`` must be a 
+multiple of ``bucket_interval``. (Or ``run_every`` if ``use_run_every_query_size`` is true).
+  
+``sync_bucket_interval``: This only has an effect if ``bucket_interval`` is present. If true it will sync the start and end times of the metric 
+calculation window to the keys (timestamps) of the underlying date_histogram buckets. Because of the way elasticsearch calculates date_histogram 
+bucket keys these usually round evenly to nearest minute, hour, day etc (depending on the bucket size). By default the bucket keys are offset to 
+allign with the time elastalert runs, (This both avoid calculations on partial data, and ensures the very latest documents are included). 
+See: https://www.elastic.co/guide/en/elasticsearch/reference/current/search-aggregations-bucket-datehistogram-aggregation.html#_offset for a 
+more comprehensive explaination.
 
 .. _alerts:
 
@@ -1017,17 +1091,23 @@ in the case of an aggregated alert, as a JSON array, to the stdin of the process
 
 This alert requires one option:
 
-``command``: A list of arguments to execute or a string to execute. If in list format, the first argument is the name of the program to execute. If passing a
-string, the command will be executed through the shell. The command string or args will be formatted using Python's % string format syntax with the
-match passed the format argument. This means that a field can be accessed with ``%(field_name)s``. In an aggregated alert, these fields will come
-from the first match.
+``command``: A list of arguments to execute or a string to execute. If in list format, the first argument is the name of the program to execute. If passed a
+string, the command is executed through the shell.
+
+Strings can be formatted using the old-style format (``%``) or the new-style format (``.format()``). When the old-style format is used, fields are accessed
+using ``%(field_name)s``. When the new-style format is used, fields are accessed using ``{match[field_name]}``. New-style formatting allows accessing nested
+fields (e.g., ``{match[field_1_name][field_2_name]}``).
+
+In an aggregated alert, these fields come from the first match.
 
 Optional:
+
+``new_style_string_format``: If True, arguments are formatted using ``.format()`` rather than ``%``. The default is False.
 
 ``pipe_match_json``: If true, the match will be converted to JSON and passed to stdin of the command. Note that this will cause ElastAlert to block
 until the command exits or sends an EOF to stdout.
 
-Example usage::
+Example usage using old-style format::
 
     alert:
       - command
@@ -1037,6 +1117,12 @@ Example usage::
 
     Executing commmands with untrusted data can make it vulnerable to shell injection! If you use formatted data in
     your command, it is highly recommended that you use a args list format instead of a shell string.
+
+Example usage using new-style format::
+
+    alert:
+      - command
+    command: ["/bin/send_alert", "--username", "{match[username]}"]
 
 
 Email
@@ -1050,6 +1136,18 @@ This alert requires one additional option:
 ``email``: An address or list of addresses to sent the alert to.
 
 Optional:
+
+``email_from_field``: Use a field from the document that triggered the alert as the recipient. If the field cannot be found,
+the ``email`` value will be used as a default. Note that this field will not be available in every rule type, for example, if
+you have ``use_count_query`` or if it's ``type: flatline``. You can optionally add a domain suffix to the field to generate the
+address using ``email_add_domain``. For example, with the following settings::
+
+    email_from_field: "data.user"
+    email_add_domain: "@example.com"
+
+and a match ``{"@timestamp": "2017", "data": {"foo": "bar", "user": "qlo"}}``
+
+an email would be sent to ``qlo@example.com``
 
 ``smtp_host``: The SMTP host to use, defaults to localhost.
 
@@ -1295,6 +1393,28 @@ The alerter requires the following option:
 If there's no open (i.e. unresolved) incident with this key, a new one will be created. If there's already an open incident with a matching key, this event will be appended to that incident's log.
 
 ``pagerduty_proxy``: By default ElastAlert will not use a network proxy to send notifications to Pagerduty. Set this option using ``hostname:port`` if you need to use a proxy.
+
+Exotel
+~~~~~~
+
+Developers in India can use Exotel alerter, it will trigger an incident to a mobile phone as sms from your exophone. Alert name along with the message body will be sent as an sms.
+
+The alerter requires the following option:
+
+``exotel_accout_sid``: This is sid of your Exotel account.
+
+``exotel_auth_token``: Auth token assosiated with your Exotel account.
+
+If you don't know how to find your accound sid and auth token, refer - http://support.exotel.in/support/solutions/articles/3000023019-how-to-find-my-exotel-token-and-exotel-sid-
+
+``exotel_to_number``: The phone number where you would like send the notification.
+
+``exotel_from_number``: Your exophone number from which message will be sent.
+
+The alerter has one optional argument:
+
+``exotel_message_body``: Message you want to send in the sms, is you don't specify this argument only the rule name is sent
+
 
 Twilio
 ~~~~~~
